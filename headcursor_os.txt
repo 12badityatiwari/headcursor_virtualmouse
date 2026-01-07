@@ -1,0 +1,126 @@
+import cv2
+import mediapipe as mp
+import pyautogui
+import numpy as np
+import time
+
+pyautogui.FAILSAFE = False
+
+# ---------------- CAMERA ----------------
+cam_w, cam_h = 640, 480
+cap = cv2.VideoCapture(0)
+cap.set(3, cam_w)
+cap.set(4, cam_h)
+
+screen_w, screen_h = pyautogui.size()
+
+# ---------------- MEDIAPIPE ----------------
+mp_face = mp.solutions.face_mesh
+face = mp_face.FaceMesh(
+    refine_landmarks=True,
+    max_num_faces=1
+)
+
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands(max_num_hands=1)
+
+# ---------------- CONSTANTS ----------------
+NOSE_ID = 1
+
+gain = 7
+smooth = 7
+dead_zone = 5
+
+prev_x, prev_y = pyautogui.position()
+neutral_x, neutral_y = None, None
+click_cooldown = 0
+
+time.sleep(2)
+
+# ---------------- MAIN LOOP ----------------
+while True:
+    success, img = cap.read()
+    if not success:
+        break
+
+    img = cv2.flip(img, 1)
+    h, w, _ = img.shape
+
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    face_result = face.process(rgb)
+    hand_result = hands.process(rgb)
+
+    # ========== FACE (MAX DOTS) ==========
+    if face_result.multi_face_landmarks:
+        lm = face_result.multi_face_landmarks[0].landmark
+
+        # Draw ALL face landmarks (468+)
+        for i in range(len(lm)):
+            x = int(lm[i].x * w)
+            y = int(lm[i].y * h)
+            cv2.circle(img, (x, y), 1, (0, 255, 255), -1)
+
+        # ---- Nose cursor control ----
+        nose = lm[NOSE_ID]
+        x = int(nose.x * w)
+        y = int(nose.y * h)
+
+        if neutral_x is None:
+            neutral_x, neutral_y = x, y
+
+        dx = x - neutral_x
+        dy = y - neutral_y
+
+        if abs(dx) < dead_zone:
+            dx = 0
+        if abs(dy) < dead_zone:
+            dy = 0
+
+        move_x = dx * gain
+        move_y = dy * gain
+
+        cur_x, cur_y = pyautogui.position()
+        target_x = cur_x + move_x
+        target_y = cur_y + move_y
+
+        final_x = prev_x + (target_x - prev_x) / smooth
+        final_y = prev_y + (target_y - prev_y) / smooth
+
+        pyautogui.moveTo(final_x, final_y)
+        prev_x, prev_y = final_x, final_y
+
+    # ========== HAND (MAX DOTS) ==========
+    if hand_result.multi_hand_landmarks:
+        lm = hand_result.multi_hand_landmarks[0].landmark
+
+        # Draw ALL hand landmarks (21)
+        for p in lm:
+            x = int(p.x * w)
+            y = int(p.y * h)
+            cv2.circle(img, (x, y), 2, (255, 200, 0), -1)
+
+        # ---- Gestures ----
+        index_up = lm[8].y < lm[6].y
+        middle_up = lm[12].y < lm[10].y
+        thumb_up = lm[4].x > lm[3].x
+
+        if time.time() - click_cooldown > 0.5:
+
+            if index_up and not middle_up:
+                pyautogui.click()
+                click_cooldown = time.time()
+
+            if thumb_up and not index_up and not middle_up:
+                pyautogui.doubleClick()
+                click_cooldown = time.time()
+
+    # ---------------- DISPLAY ----------------
+    cv2.imshow("Iron-Man HUD | MAX Face + Hand Dots", img)
+
+    if cv2.waitKey(1) & 0xFF == 27:
+        break
+
+# ---------------- CLEANUP ----------------
+cap.release()
+cv2.destroyAllWindows()
